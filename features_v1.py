@@ -87,69 +87,6 @@ def extract_features_v1(df):
     return df
 
 
-# The original code is
-# https://github.com/aerdem4/kaggle-plasticc/blob/master/feature_extraction/features_v1.py#L7.
-# This is a modified version, `sub_id` column is added to the input data.
-def extract_features_v1_augmented(df):
-    df["std_flux"] = df["flux"].values
-    df["min_flux"] = df["flux"].values
-    df["max_flux"] = df["flux"].values
-    df["detected_flux"] = df["flux"] * df["detected"]
-    df["flux_sign"] = np.sign(df["flux"])
-    df["observation_count"] = 1
-
-    df["detected_mjd_max"] = df["mjd"] * none_or_one(df["detected"])
-    df["detected_mjd_min"] = df["mjd"] * none_or_one(df["detected"])
-    df["fake_flux"] = df["flux"] - np.sign(df["flux"]) * df["flux_err"]
-
-    df["diff"] = df["flux"] - df.groupby(["object_id", 'sub_id', "passband"])["flux"].shift(1)
-    df["time_diff"] = df.groupby(["object_id", 'sub_id', "detected", "flux_sign"])["mjd"].shift(-1) - df["mjd"]
-    df["time_diff_pos"] = df["time_diff"] * none_or_one(df["detected"]) * (df["flux_sign"] == 1)
-    df["time_diff_neg"] = df["time_diff"] * none_or_one(df["detected"]) * (df["flux_sign"] == -1)
-
-    aggs = {"detected_mjd_max": "max", "detected_mjd_min": "min", "observation_count": "count",
-            "flux": "median", "flux_err": "mean",
-            "std_flux": "std", "min_flux": "min", "max_flux": "max",
-            "detected_flux": "max", "time_diff_pos": "max", "time_diff_neg": "max", "time_diff": "max",
-            "fake_flux": kurtosis, 'detected': 'sum'}
-
-    for i in range(6):
-        df["raw_flux" + str(i)] = (df["fake_flux"]) * (df["passband"] == i)
-        aggs["raw_flux" + str(i)] = "max"
-
-        df["sn" + str(i)] = np.power(df["flux"] / df["flux_err"], 2) * (df["passband"] == i)
-        aggs["sn" + str(i)] = "max"
-
-        df["flux_sn" + str(i)] = df["flux"] * df["sn" + str(i)]
-        aggs["flux_sn" + str(i)] = "max"
-
-        df["skew" + str(i)] = (df["fake_flux"]) * ((df["passband"] == i) / (df["passband"] == i).astype(int))
-        aggs["skew" + str(i)] = "skew"
-
-        df["f" + str(i)] = (df["flux"]) * (df["passband"] == i)
-        aggs["f" + str(i)] = "mean"
-
-        df["d" + str(i)] = (df["detected"]) * (df["passband"] == i)
-        aggs["d" + str(i)] = "sum"
-
-        df["dd" + str(i)] = (df["diff"]) * (df["passband"] == i)
-        aggs["dd" + str(i)] = "max"
-
-    df = df.groupby(["object_id", 'sub_id']).agg(aggs).reset_index()
-    df = df.rename(columns={"detected": "total_detected"})
-    df["time_diff_full"] = df["detected_mjd_max"] - df["detected_mjd_min"]
-    df["detected_period"] = df["time_diff_full"] / df["total_detected"]
-    df["ratio_detected"] = df["total_detected"] / df["observation_count"]
-    df["delta_flux"] = df["max_flux"] - df["min_flux"]
-
-    for col in ["sn", "flux_sn", "f", "dd"]:
-        total_sum = df[[col + str(i) for i in range(6)]].sum(axis=1)
-        for i in range(6):
-            df[col + str(i)] /= total_sum
-
-    return df
-
-
 @click.group()
 def cmd():
     pass
@@ -161,8 +98,7 @@ def cmd():
 @click.option('--meta-path', type=click.Path(exists=True),
               default='../../data/raw/test_set_metadata.csv')
 @click.option('--output-path', type=click.Path(),
-              default='../../data/processed/4th/test_set_features_v1.pickle'
-              )
+              default='../../data/processed/4th/test_set_features_v1.pickle')
 def raw(data_path, meta_path, output_path):
     output_path = Path(output_path)
     if not output_path.parent.exists():
@@ -171,8 +107,9 @@ def raw(data_path, meta_path, output_path):
     df = pd.read_csv(data_path, header=0)
     if 'test' in data_path:
         feature_list = []
+        mod = df['object_id'] % 256
         for i in trange(256):
-            tmp = df[(df['object_id'] % 256) == i]
+            tmp = df[mod == i].copy()
             tmp_feature = extract_features_v1(df=tmp)
             feature_list.append(tmp_feature)
         features = pd.concat(feature_list, axis=0)
@@ -182,25 +119,19 @@ def raw(data_path, meta_path, output_path):
 
 
 @cmd.command()
-@click.option('--data-dir', type=click.Path(exists=True),
-              default='../../data/interim/augmented')
-@click.option('--target', type=click.Choice([
-    '15', '42', '52', '62', '64', '67', '88', '90', '95'
-]))
-def augmented(data_dir, target):
-    data_dir = Path(data_dir)
-    target = int(target)
+@click.option('--hdf5-path', type=click.Path(exists=True),
+              default='../../data/processed/4th/train_augment_v3_40.h5')
+@click.option('--output-path', type=click.Path(),
+              default='../../data/processed/4th/test_set_features_v1.pickle')
+def augmented(hdf5_path, output_path):
+    output_path = Path(output_path)
+    if not output_path.parent.exists():
+        output_path.parent.mkdir(parents=True)
 
-    df_list = []
-    with pd.HDFStore(data_dir / 'data{}_00.h5'.format(target)) as store:
-        for key in store.keys():
-            if key == '/redshift':
-                continue
-            value = store[key]
-            df_list.append(value)
-    df = pd.concat(df_list, axis=0, ignore_index=True)
-    df = extract_features_v1_augmented(df)
-    df.to_pickle(data_dir / 'features_v1_{}_00.pickle'.format(target))
+    df = pd.read_hdf(hdf5_path, 'df')   # type: pd.DataFrame
+
+    features = extract_features_v1(df=df)
+    features.to_pickle(output_path)
 
 
 def main():

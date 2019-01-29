@@ -8,6 +8,7 @@ reference: https://www.kaggle.com/c/PLAsTiCC-2018/discussion/75011
 """
 
 import multiprocessing
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -57,9 +58,12 @@ def fit_scipy(time, low_passband, flux, flux_err):
     weights = weights / weights.sum()
     guess = [0, amp_init, t0_init, 40, -5, 0.5]
 
-    result = least_squares(
-        errfunc, guess, args=(time, low_passband, flux, weights), method='lm'
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore', RuntimeWarning)
+        result = least_squares(
+            errfunc, guess, args=(time, low_passband, flux, weights),
+            method='lm'
+        )
     # noinspection PyUnresolvedReferences
     result.t_shift = t0_init - result.x[2]
 
@@ -70,7 +74,7 @@ def fit_scipy(time, low_passband, flux, flux_err):
 # https://github.com/aerdem4/kaggle-plasticc/blob/master/feature_extraction/bazin.py#L44.
 def yield_data(meta_df, lc_df):
     cols = ["object_id", "mjd", "flux", "flux_err", "low_passband"]
-    for i in range(NUM_PARTITIONS):
+    for i in trange(NUM_PARTITIONS):
         meta_flag = (meta_df["object_id"] % NUM_PARTITIONS) == i
         lc_flag = (lc_df["object_id"] % NUM_PARTITIONS) == i
         yield meta_df[meta_flag]["object_id"].values, lc_df[lc_flag][cols]
@@ -81,7 +85,7 @@ def yield_data(meta_df, lc_df):
 # This is modified. The object ids are not integers.
 def yield_data_augmented(meta_df, lc_df):
     cols = ["object_id", "mjd", "flux", "flux_err", "low_passband"]
-    for i in range(NUM_PARTITIONS):
+    for i in trange(NUM_PARTITIONS):
         object_id_list = meta_df.iloc[i::NUM_PARTITIONS]["object_id"].values
         s = set(object_id_list)
         flag = np.empty(len(lc_df), dtype=np.bool)
